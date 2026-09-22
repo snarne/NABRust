@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Thin wrapper: loads server/.env then runs the CLI.
+# Usage:  ./nab find "example trio"      ./nab serve      ./nab stats
+# Variables already set on the command line win over server/.env, so
+#   NABRUST_DB=./sim.db ./nab serve
+# opens the simulated database rather than your real one.
+set -euo pipefail
+cd "$(dirname "$0")"
+if [ -f server/.env ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^[[:space:]]*([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]] || continue
+    key="${BASH_REMATCH[1]}"; val="${BASH_REMATCH[2]}"
+    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
+    if ! printenv "$key" >/dev/null 2>&1; then export "$key=$val"; fi
+  done < server/.env
+fi
+exec node --experimental-strip-types --no-warnings server/src/cli.ts "$@"

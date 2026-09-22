@@ -1,0 +1,27 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # Server: zero dependencies, runs straight from TypeScript.
+      - name: server tests
+        run: npm test
+      - run: npm ci
+      - name: web typecheck
+        run: npm run typecheck
+      - name: server typecheck
+        run: |
+          npm install --no-save @types/node@22
+          npx tsc -p server/tsconfig.json
+      - name: web build
+        run: npx vite build

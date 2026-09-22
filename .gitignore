@@ -1,0 +1,25 @@
+# dependencies / build
+node_modules
+dist
+.DS_Store
+
+# secrets — only server/.env.example is committed
+.env
+server/.env
+!server/.env.example
+
+# databases hold real player data: never commit them
+*.db
+*.db-wal
+*.db-shm
+*.db.bak*
+sim.db*
+
+# downloaded world files, rendered maps, logs
+data/
+*.log
+
+# transfer scratch / mount artifacts
+.fuse_hidden*
+.nabrust-*.tar.gz
+.incoming-*.tar.gz

@@ -1,0 +1,14 @@
+{
+  "name": "nabrust-server",
+  "private": true,
+  "version": "0.5.0",
+  "type": "module",
+  "description": "NABRust backend — collectors, ingest, inference and API. Zero runtime dependencies.",
+  "engines": { "node": ">=22.6" },
+  "scripts": {
+    "test": "node --experimental-strip-types --no-warnings test/run.ts",
+    "cli": "node --experimental-strip-types --no-warnings src/cli.ts",
+    "serve": "node --experimental-strip-types --no-warnings src/cli.ts serve",
+    "agent": "node --experimental-strip-types --no-warnings ../agent/agent.ts"
+  }
+}
