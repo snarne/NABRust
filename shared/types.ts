@@ -223,6 +223,22 @@ export interface Monument {
   named?: boolean
 }
 
+/** A paired Rust+ device: smart switch, smart alarm or storage monitor. */
+export interface DeviceRecord {
+  entityId: number
+  kind: 'switch' | 'alarm' | 'storage'
+  name: string | null
+  /** Switch/alarm state. null until the device has been read once. */
+  value: boolean | null
+  /** Storage monitor contents, already named. */
+  contents: { name: string; quantity: number }[]
+  capacity: number | null
+  /** Human phrasing of the tool cupboard's remaining upkeep, when known. */
+  upkeep: string | null
+  protectionExpiry: string | null
+  lastSeen: string | null
+}
+
 export interface ServerMapInfo {
   /** Rust+ getMap() JPEG, once paired and downloaded. */
   rustPlusImageUrl: string | null
@@ -261,7 +277,7 @@ export interface ServerRecord {
 }
 
 export interface GameEvent {
-  kind: 'cargo' | 'heli' | 'crate' | 'chinook' | 'explosion'
+  kind: 'cargo' | 'heli' | 'crate' | 'chinook' | 'explosion' | 'alarm'
   label: string
   /** Seconds remaining, derived from one observation + fixed duration. */
   etaSeconds: number
@@ -345,4 +361,8 @@ export interface ServerDataset {
   recentEncounters?: Encounter[]
   /** In-game clock from Rust+, if paired. */
   gameTime?: { time: number; sunrise: number; sunset: number; observedAt: string } | null
+  /** Paired smart switches, alarms and storage monitors. */
+  devices?: DeviceRecord[]
+  /** Team chat as Rust+ saw it, oldest first. */
+  teamChat?: { steamId: SteamId; name: string; message: string; at: string }[]
 }

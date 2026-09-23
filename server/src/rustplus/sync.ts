@@ -273,3 +273,42 @@ export function recordTeammateDeath(
     death.steamId, death.x ?? null, death.y ?? null)
   return id
 }
+
+
+/**
+ * Store team chat. Rust+ reports messages with a unix timestamp; the same
+ * message can arrive twice (once in a broadcast, once in a getTeamChat
+ * backfill), so the primary key absorbs duplicates.
+ */
+export function recordTeamChat(
+  db: DB,
+  wipeId: number,
+  msgs: { steamId: string; name: string; message: string; color?: string; time: number }[],
+): number {
+  let n = 0
+  const ins = db.prepare(
+    `INSERT OR IGNORE INTO team_chat (wipe_id, steam_id, name, message, colour, at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  )
+  for (const m of msgs) {
+    const at = m.time > 0 ? new Date(m.time * 1000).toISOString() : nowIso()
+    const r = ins.run(wipeId, m.steamId, m.name, m.message, m.color ?? null, at)
+    n += Number(r.changes)
+  }
+  return n
+}
+
+export interface ChatLine {
+  steamId: string
+  name: string
+  message: string
+  at: string
+}
+
+export function recentTeamChat(db: DB, wipeId: number | null, limit = 40): ChatLine[] {
+  if (wipeId === null) return []
+  const rows = db.prepare(
+    `SELECT steam_id, name, message, at FROM team_chat WHERE wipe_id = ? ORDER BY at DESC LIMIT ?`,
+  ).all(wipeId, limit) as { steam_id: string; name: string; message: string; at: string }[]
+  return rows.reverse().map((r) => ({ steamId: r.steam_id, name: r.name, message: r.message, at: r.at }))
+}

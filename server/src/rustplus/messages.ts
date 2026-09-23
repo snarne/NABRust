@@ -11,7 +11,9 @@
 //   uint32 entityId = 4;
 //   AppEmpty getInfo = 8; getTime = 9; getMap = 10; getTeamInfo = 11;
 //   getTeamChat = 12; AppSendMessage sendTeamMessage = 13;
-//   AppEmpty getMapMarkers = 18;
+//   AppEmpty getEntityInfo = 14; AppSetEntityValue setEntityValue = 15;
+//   AppEmpty checkSubscription = 16; AppFlag setSubscription = 17;
+//   AppEmpty getMapMarkers = 18; AppEmpty getClanInfo = 21;
 // }
 // AppResponse { ... AppMapMarkers mapMarkers = 13; }
 // AppMapMarkers { repeated AppMarker markers = 1; }
@@ -29,6 +31,8 @@ import {
 export type RequestKind =
   | 'getInfo' | 'getTime' | 'getMap' | 'getTeamInfo'
   | 'getTeamChat' | 'getMapMarkers' | 'sendTeamMessage'
+  | 'getEntityInfo' | 'setEntityValue' | 'checkSubscription' | 'setSubscription'
+  | 'getClanInfo'
 
 const REQUEST_FIELD: Record<RequestKind, number> = {
   getInfo: 8,
@@ -37,7 +41,20 @@ const REQUEST_FIELD: Record<RequestKind, number> = {
   getTeamInfo: 11,
   getTeamChat: 12,
   sendTeamMessage: 13,
+  getEntityInfo: 14,
+  setEntityValue: 15,
+  checkSubscription: 16,
+  setSubscription: 17,
   getMapMarkers: 18,
+  getClanInfo: 21,
+}
+
+/** AppEntityType. A paired device is exactly one of these. */
+export const ENTITY_TYPE = { switch: 1, alarm: 2, storage: 3 } as const
+export type EntityKind = keyof typeof ENTITY_TYPE
+
+export function entityKindOf(type: number): EntityKind | null {
+  return (Object.keys(ENTITY_TYPE) as EntityKind[]).find((k) => ENTITY_TYPE[k] === type) ?? null
 }
 
 export interface Credentials {
@@ -49,16 +66,21 @@ export function encodeRequest(
   seq: number,
   cred: Credentials,
   kind: RequestKind,
-  payload?: { message?: string },
+  payload?: { message?: string; entityId?: number; value?: boolean },
 ): Uint8Array {
   const w = new Writer()
   w.uint32Always(1, seq)
   w.uint64(2, cred.playerId)
   w.int32(3, cred.playerToken)
+  // Entity requests address one paired device; the id rides on the request
+  // itself rather than inside the sub-message.
+  if (payload?.entityId !== undefined) w.uint32Always(4, payload.entityId)
 
   const field = REQUEST_FIELD[kind]
   if (kind === 'sendTeamMessage') {
     w.message(field, (m) => m.string(1, payload?.message ?? ''))
+  } else if (kind === 'setEntityValue' || kind === 'setSubscription') {
+    w.message(field, (m) => m.bool(1, payload?.value ?? false))
   } else {
     w.empty(field) // AppEmpty
   }
@@ -168,8 +190,37 @@ export interface AppMarker {
   outOfStock: boolean
 }
 
+export interface EntityItem {
+  itemId: number
+  quantity: number
+  isBlueprint: boolean
+}
+
+/**
+ * State of one paired device.
+ *
+ * `value` is the switch/alarm state; storage monitors report contents. A tool
+ * cupboard monitor also reports its protection window, which is how upkeep
+ * shows up here.
+ */
+export interface AppEntityInfo {
+  type: number
+  kind: EntityKind | null
+  value: boolean
+  items: EntityItem[]
+  capacity: number
+  hasProtection: boolean
+  /** Unix seconds when protection runs out; 0 when not reported. */
+  protectionExpiry: number
+}
+
 export interface AppResponse {
   seq: number
+  /** Your own server-side clan, when the server runs clans. */
+  clanInfo?: { name: string; members: number }
+  entityInfo?: AppEntityInfo
+  /** Subscription flag from checkSubscription / setSubscription. */
+  flag?: boolean
   mapMarkers?: AppMarker[]
   error?: string
   info?: AppInfo
@@ -183,6 +234,7 @@ export interface AppResponse {
 export interface AppBroadcast {
   teamChanged?: { playerId: string; teamInfo: AppTeamInfo }
   teamMessage?: TeamMessage
+  entityChanged?: { entityId: number; payload: AppEntityInfo }
 }
 
 export interface AppMessage {
@@ -346,6 +398,56 @@ function decodeMarker(f: Field): AppMarker {
   return out
 }
 
+function decodeEntityItem(f: Field): EntityItem {
+  const out: EntityItem = { itemId: 0, quantity: 0, isBlueprint: false }
+  sub(f).each((x) => {
+    switch (x.field) {
+      case 1: out.itemId = asInt32(x); break
+      case 2: out.quantity = asInt32(x); break
+      case 3: out.isBlueprint = asBool(x); break
+    }
+  })
+  return out
+}
+
+/**
+ * AppEntityPayload: value, items, capacity, protection window.
+ *
+ * Merged into the AppEntityInfo shape rather than nested, because every caller
+ * wants "what is this device doing" in one object.
+ */
+function decodePayloadInto(f: Field, out: AppEntityInfo): void {
+  sub(f).each((x) => {
+    switch (x.field) {
+      case 1: out.value = asBool(x); break
+      case 2: out.items.push(decodeEntityItem(x)); break
+      case 3: out.capacity = asInt32(x); break
+      case 4: out.hasProtection = asBool(x); break
+      case 5: out.protectionExpiry = asNumber(x); break
+    }
+  })
+}
+
+/**
+ * The payload's field number inside AppEntityInfo has moved between published
+ * copies of the proto (2 in some, 3 in others), so any length-delimited field
+ * that isn't the type enum is treated as the payload. Reading a field that
+ * turns out to be something else costs nothing; missing the payload would
+ * leave every device blank.
+ */
+function decodeEntityInfo(f: Field): AppEntityInfo {
+  const out: AppEntityInfo = {
+    type: 0, kind: null, value: false, items: [], capacity: 0,
+    hasProtection: false, protectionExpiry: 0,
+  }
+  sub(f).each((x) => {
+    if (x.field === 1 && x.varint !== undefined) { out.type = asInt32(x); return }
+    if (x.bytes) decodePayloadInto(x, out)
+  })
+  out.kind = entityKindOf(out.type)
+  return out
+}
+
 function decodeResponse(f: Field): AppResponse {
   const out: AppResponse = { seq: 0 }
   sub(f).each((x) => {
@@ -360,6 +462,24 @@ function decodeResponse(f: Field): AppResponse {
       case 7: out.time = decodeTime(x); break
       case 8: out.map = decodeMap(x); break
       case 9: out.teamInfo = decodeTeamInfo(x); break
+      case 11: out.entityInfo = decodeEntityInfo(x); break
+      case 15: { // AppClanInfo { AppClan clan = 1 }
+        let name = ''
+        let members = 0
+        sub(x).each((y) => {
+          if (!y.bytes) return
+          sub(y).each((z) => {
+            if (z.field === 2 && z.bytes) name = asString(z)
+            if (z.field === 7 && z.bytes) members++
+          })
+        })
+        if (name) out.clanInfo = { name, members }
+        break
+      }
+      case 12: {
+        sub(x).each((y) => { if (y.field === 1) out.flag = asBool(y) })
+        break
+      }
       case 13: {
         const markers: AppMarker[] = []
         sub(x).each((y) => { if (y.field === 1) markers.push(decodeMarker(y)) })
@@ -392,6 +512,19 @@ function decodeBroadcast(f: Field): AppBroadcast {
         break
       }
       case 5: out.teamMessage = decodeTeamMessage(unwrapMessage(x)); break
+      case 6: { // AppEntityChanged { entityId = 1; payload = 2 }
+        let entityId = 0
+        const payload: AppEntityInfo = {
+          type: 0, kind: null, value: false, items: [], capacity: 0,
+          hasProtection: false, protectionExpiry: 0,
+        }
+        sub(x).each((y) => {
+          if (y.field === 1 && y.varint !== undefined) entityId = asNumber(y)
+          else if (y.bytes) decodePayloadInto(y, payload)
+        })
+        if (entityId) out.entityChanged = { entityId, payload }
+        break
+      }
     }
   })
   return out

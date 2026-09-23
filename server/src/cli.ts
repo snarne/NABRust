@@ -24,7 +24,10 @@ import {
   closeStaleSessions, downloadTo, fetchOnline, fetchServerInfo, recordSnapshot,
   searchServers, startCollector,
 } from './collectors/battlemetrics.ts'
-import { startRustPlus } from './rustplus/runtime.ts'
+import { startRustPlus, type RuntimeHandle } from './rustplus/runtime.ts'
+import {
+  addDevice, contentsSummary, deviceLabel, listDevices, removeDevice, upkeepSummary,
+} from './rustplus/entities.ts'
 import { RustPlusClient } from './rustplus/client.ts'
 import { formatGameTime, isNight } from './rustplus/messages.ts'
 
@@ -83,7 +86,20 @@ async function main() {
     }
 
     case 'serve': {
-      const api = createApi({ db, token: TOKEN, port: Number(process.env.PORT ?? 8787), teamIds: TEAM })
+      // The API can flip a smart switch only while this process holds the
+      // Rust+ connection, so the handles are kept here and handed to it.
+      const runtimes = new Map<string, RuntimeHandle>()
+      const api = createApi({
+        db,
+        token: TOKEN,
+        port: Number(process.env.PORT ?? 8787),
+        teamIds: TEAM,
+        setSwitch: async (serverId, entityId, value) => {
+          const rt = runtimes.get(serverId)
+          if (!rt) throw new Error(`Rust+ is not connected for ${serverId}`)
+          await rt.setSwitch(entityId, value)
+        },
+      })
       const port = await api.listen()
       console.log(`api listening on :${port}`)
       if (TOKEN === 'change-me' || TOKEN === 'nab-local-dev-change-me') {
@@ -158,7 +174,7 @@ async function main() {
 
       if (!paired.length) console.log('no Rust+ pairing stored — run `pair` to add one')
       for (const s of paired) {
-        startRustPlus({
+        runtimes.set(s.id, startRustPlus({
           db,
           serverId: s.id,
           host: s.rustplus_host,
@@ -168,8 +184,48 @@ async function main() {
           dataDir: process.env.NABRUST_DATA ?? './data',
           log: (m) => console.log(`[rust+ ${s.id}] ${m}`),
           onAlert: (a) => console.log(`[alert ${s.id}] ${a.kind}: ${a.text}`),
-        })
+        }))
         console.log(`rust+ runtime started for ${s.id}`)
+      }
+      break
+    }
+
+    case 'device': {
+      // Pairing a smart switch, alarm or storage monitor in game sends a push
+      // notification carrying its entity id. Capture it the same way as the
+      // server pairing (rustplus.js fcm-listen) and add it here.
+      const id = arg('id') ?? 'server-1'
+      const wipe = currentWipe(db, id)
+      if (!wipe) throw new Error(`no wipe for ${id} — run \`init\` first`)
+
+      const entityId = arg('add') ?? arg('remove') ?? null
+      if (arg('remove')) {
+        const ok = removeDevice(db, id, wipe.id, Number(arg('remove')))
+        console.log(ok ? `removed device ${arg('remove')}` : 'no such device')
+        break
+      }
+      if (entityId) {
+        addDevice(db, id, wipe.id, {
+          entityId: Number(entityId),
+          kind: arg('kind') ?? 'switch',
+          name: arg('name') ?? null,
+        })
+        console.log(`added ${arg('kind') ?? 'switch'} ${entityId}${arg('name') ? ` (${arg('name')})` : ''}`)
+        console.log('`serve` reads it on the next poll, or immediately on reconnect')
+        break
+      }
+
+      const devices = listDevices(db, id, wipe.id)
+      if (!devices.length) {
+        console.log(`no devices paired on ${id}`)
+        console.log('add one:  ./nab device --id <server> --add <entityId> --kind switch|alarm|storage --name "front door"')
+        break
+      }
+      for (const d of devices) {
+        const state = d.kind === 'storage'
+          ? [upkeepSummary(d), contentsSummary(d)].filter(Boolean).join(' · ') || 'not read yet'
+          : d.value === null ? 'not read yet' : d.value ? 'ON' : 'off'
+        console.log(`  ${String(d.entityId).padEnd(10)} ${d.kind.padEnd(8)} ${deviceLabel(d).padEnd(22)} ${state}`)
       }
       break
     }
@@ -580,6 +636,8 @@ notification (rustplus.js fcm-listen, or the Rust+ desktop app).`)
     clans       --id <id>                  rebuild rosters and list them
     validate                               score the teammate model on simulated servers
     simulate    [--db ./sim.db --hours 72 --map-from <id> --force]  a fake server for testing every page
+    device      --id [--add <entityId> --kind switch|alarm|storage --name ".."]
+                [--remove <entityId>]            paired Rust+ devices; no flags lists them
     wipe        --id [--seed N --world N] [--force]
     stats
 

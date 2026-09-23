@@ -20,7 +20,7 @@
 import { EventEmitter } from 'node:events'
 import {
   decodeMessage, encodeRequest,
-  type AppBroadcast, type AppInfo, type AppMap, type AppMarker, type AppResponse,
+  type AppBroadcast, type AppEntityInfo, type AppInfo, type AppMap, type AppMarker, type AppResponse,
   type AppTeamInfo, type AppTime, type Credentials, type RequestKind,
   type TeamMessage,
 } from './messages.ts'
@@ -137,6 +137,7 @@ export class RustPlusClient extends EventEmitter {
       this.emit('broadcast', msg.broadcast)
       if (msg.broadcast.teamChanged) this.emit('teamChanged', msg.broadcast.teamChanged.teamInfo)
       if (msg.broadcast.teamMessage) this.emit('teamMessage', msg.broadcast.teamMessage)
+      if (msg.broadcast.entityChanged) this.emit('entityChanged', msg.broadcast.entityChanged)
     }
   }
 
@@ -149,7 +150,10 @@ export class RustPlusClient extends EventEmitter {
   }
 
   /** Requests are serialised and spaced — bursts trip the server's limiter. */
-  private send(kind: RequestKind, payload?: { message?: string }): Promise<AppResponse> {
+  private send(
+    kind: RequestKind,
+    payload?: { message?: string; entityId?: number; value?: boolean },
+  ): Promise<AppResponse> {
     const run = async (): Promise<AppResponse> => {
       if (this.closed) throw new Error('client closed')
       const ws = this.ws
@@ -212,6 +216,40 @@ export class RustPlusClient extends EventEmitter {
   async getTeamChat(): Promise<TeamMessage[]> {
     const r = await this.send('getTeamChat')
     return r.teamChat ?? []
+  }
+
+  /**
+   * State of one paired device (smart switch, smart alarm, storage monitor).
+   * The entity id comes from pairing that device in game.
+   */
+  async getEntityInfo(entityId: number): Promise<AppEntityInfo> {
+    const r = await this.send('getEntityInfo', { entityId })
+    if (!r.entityInfo) throw new Error('no entityInfo in response')
+    return r.entityInfo
+  }
+
+  /** Flip a smart switch. Alarms and storage monitors ignore this. */
+  async setEntityValue(entityId: number, value: boolean): Promise<void> {
+    await this.send('setEntityValue', { entityId, value })
+  }
+
+  /** Ask the server to push entityChanged broadcasts for this device. */
+  async setSubscription(entityId: number, value = true): Promise<void> {
+    await this.send('setSubscription', { entityId, value })
+  }
+
+  async checkSubscription(entityId: number): Promise<boolean> {
+    const r = await this.send('checkSubscription', { entityId })
+    return r.flag ?? false
+  }
+
+  /**
+   * The server-side clan you belong to, when the server runs clans. Rust+
+   * only ever returns your own clan, never anyone else's.
+   */
+  async getClanInfo(): Promise<{ name: string; members: number } | null> {
+    const r = await this.send('getClanInfo')
+    return r.clanInfo ?? null
   }
 
   async sendTeamMessage(message: string): Promise<void> {

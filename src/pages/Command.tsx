@@ -3,8 +3,9 @@ import { MapCanvas, type HeatBlob, type MapMarker } from '../components/MapCanva
 import { Avatar, Bar, Card, Chip, Sect, T, initialsOf, threatColor } from '../components/ui'
 import { Icon } from '../components/icons'
 import { useServer } from '../state/ServerProvider'
+import { sendJson } from '../data/live'
 import { linkConfidence } from '../../shared/inference/clanEvidence'
-import type { GameEvent } from '../../shared/types'
+import type { DeviceRecord, GameEvent } from '../../shared/types'
 
 const LAYERS = [
   { key: 'deaths', label: 'Where we died', color: T.crit },
@@ -35,6 +36,78 @@ const EVENT_STYLE: Record<GameEvent['kind'], { color: string; icon: keyof typeof
   chinook: { color: T.amber, icon: 'heli' },
   crate: { color: T.rust, icon: 'crate' },
   explosion: { color: T.crit, icon: 'heli' },
+  alarm: { color: T.crit, icon: 'alarm' },
+}
+
+/**
+ * Paired Rust+ devices. Switches can be flipped from here; alarms and storage
+ * monitors report. A storage monitor on a tool cupboard is how upkeep shows
+ * up, which is the one number people forget until the base decays.
+ */
+function Devices({ devices }: { devices: DeviceRecord[] }) {
+  const { server, connection, refresh } = useServer()
+  const [busy, setBusy] = useState<number | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const flip = async (d: DeviceRecord) => {
+    setBusy(d.entityId)
+    setError(null)
+    try {
+      await sendJson(connection.config, 'POST', `/api/devices/${d.entityId}/set`, {
+        serverId: server.id, value: !d.value,
+      })
+      refresh()
+    } catch (e) {
+      // Rust+ not connected is the usual cause, and saying so beats a dead button.
+      setError((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <Card style={{ padding: 15 }}>
+      <Sect title="Base devices" right={
+        <span className="mono" style={{ fontSize: 10, color: T.txt3 }}>{devices.length} paired</span>
+      } />
+      {devices.map((d) => {
+        const label = d.name ?? `${d.kind} #${d.entityId}`
+        const colour = d.kind === 'alarm' ? T.crit : d.kind === 'storage' ? T.steel : T.amber
+        return (
+          <div className="row" key={d.entityId} style={{ alignItems: 'flex-start' }}>
+            <span style={{ color: colour, display: 'flex', paddingTop: 2 }}>
+              {d.kind === 'alarm' ? Icon.alarm({ size: 16 }) : d.kind === 'storage' ? Icon.base({ size: 16 }) : Icon.bolt({ size: 16 })}
+            </span>
+            <span style={{ flexGrow: 1, lineHeight: 1.3, minWidth: 0 }}>
+              <span style={{ fontSize: 13, fontWeight: 600, display: 'block' }}>{label}</span>
+              <span className="mono" style={{ fontSize: 10, color: T.txt3 }}>
+                {d.kind === 'storage'
+                  ? d.upkeep ?? (d.contents.length
+                    ? d.contents.slice(0, 3).map((c) => `${c.quantity.toLocaleString()} ${c.name}`).join(' · ')
+                    : 'not read yet')
+                  : d.lastSeen ? `read ${new Date(d.lastSeen).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'not read yet'}
+              </span>
+            </span>
+            {d.kind === 'switch' && (
+              <button className="btn" style={{ height: 26, padding: '0 10px' }}
+                disabled={busy === d.entityId} onClick={() => void flip(d)}>
+                {busy === d.entityId ? '…' : d.value ? 'ON' : 'off'}
+              </button>
+            )}
+            {d.kind === 'alarm' && (
+              <Chip color={d.value ? T.crit : T.txt3} bg={d.value ? 'rgba(176,52,43,.15)' : undefined}>
+                {d.value ? 'TRIGGERED' : 'quiet'}
+              </Chip>
+            )}
+          </div>
+        )
+      })}
+      {error && <div className="note" style={{ marginTop: 10 }}>{error}</div>}
+      <p className="mono" style={{ fontSize: 10, color: T.txt3, margin: '10px 0 0', lineHeight: 1.5 }}>
+        Devices you paired in game. Add one with `nab device --add`.
+      </p>
+    </Card>
+  )
 }
 
 /** Most of a 300-player server doesn't belong on a dashboard. */
@@ -177,6 +250,27 @@ export function Command() {
             )
           })}
         </Card>
+
+        {(data.devices?.length ?? 0) > 0 && <Devices devices={data.devices!} />}
+
+        {(data.teamChat?.length ?? 0) > 0 && (
+          <Card style={{ padding: 15 }}>
+            <Sect title="Team chat" right={
+              <span className="mono" style={{ fontSize: 10, color: T.txt3 }}>last {data.teamChat!.length}</span>
+            } />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7, maxHeight: 190, overflowY: 'auto' }}>
+              {data.teamChat!.slice(-12).map((m, i) => (
+                <div key={i} style={{ fontSize: 12, lineHeight: 1.4 }}>
+                  <span className="mono" style={{ fontSize: 10, color: T.txt3 }}>
+                    {new Date(m.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}{' '}
+                  </span>
+                  <b style={{ color: isUs(m.steamId) ? T.steel : T.txt2 }}>{m.name}</b>{' '}
+                  <span style={{ color: T.txt }}>{m.message}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
 
         {data.team.length > 0 && (
           <Card style={{ padding: 15 }}>

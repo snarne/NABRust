@@ -23,12 +23,16 @@
 import type { DB } from '../db/index.ts'
 import { nowIso, setServerState } from '../db/index.ts'
 import { recordSnapshot } from '../collectors/battlemetrics.ts'
-import { recordTeammateDeath, syncTeam } from '../rustplus/sync.ts'
+import { recordTeamChat, recordTeammateDeath, syncTeam } from '../rustplus/sync.ts'
 import { trackMarkers } from '../rustplus/events.ts'
 import { MARKER_TYPE, type AppMarker, type AppTeamInfo, type MapNote, type TeamMember } from '../rustplus/messages.ts'
 import { buildSessionEvidence, ingestCombatLog } from '../ingest.ts'
 import { rebuildClans } from '../pairs.ts'
 import { createBase } from '../api/bases.ts'
+import { addDevice, recordDeviceState } from '../rustplus/entities.ts'
+
+import { ENTITY_TYPE } from '../rustplus/messages.ts'
+import { UPKEEP_ITEMS } from '../rustplus/items.ts'
 import { readFileSync, existsSync } from 'node:fs'
 import { readWorldFile } from '../parsers/worldfile.ts'
 import { openTerrain, type Terrain } from '../parsers/terrain.ts'
@@ -306,6 +310,37 @@ export function seedSimulation(db: DB, opts: SimOptions = {}): SimTruth {
     ownerSteamId: enemies[0], raidPath: { walls: { stone: 2 }, doors: { sheet: 1, garage: 1 } },
     note: 'loot room north side, 2 turrets on roof', reportedBy: team[1],
   }, nowIsoStr)
+
+  // --- paired devices on our own base ------------------------------------------
+  // A tool cupboard monitor, a door alarm that fired an hour ago, and a switch.
+  addDevice(db, SERVER, wipeId, { entityId: 1001, kind: 'storage', name: 'tool cupboard' })
+  addDevice(db, SERVER, wipeId, { entityId: 1002, kind: 'alarm', name: 'front door' })
+  addDevice(db, SERVER, wipeId, { entityId: 1003, kind: 'switch', name: 'base lights' })
+  recordDeviceState(db, SERVER, wipeId, 1001, {
+    type: ENTITY_TYPE.storage, kind: 'storage', value: false, capacity: 24,
+    items: [
+      { itemId: UPKEEP_ITEMS.wood, quantity: 14_200, isBlueprint: false },
+      { itemId: UPKEEP_ITEMS.stones, quantity: 8_600, isBlueprint: false },
+      { itemId: UPKEEP_ITEMS['metal.fragments'], quantity: 3_100, isBlueprint: false },
+    ],
+    hasProtection: true,
+    protectionExpiry: Math.floor((now + 31 * 3_600_000) / 1000),
+  }, nowIsoStr)
+  recordDeviceState(db, SERVER, wipeId, 1002, {
+    type: ENTITY_TYPE.alarm, kind: 'alarm', value: false, items: [], capacity: 0,
+    hasProtection: false, protectionExpiry: 0,
+  }, nowIsoStr)
+  recordDeviceState(db, SERVER, wipeId, 1003, {
+    type: ENTITY_TYPE.switch, kind: 'switch', value: true, items: [], capacity: 0,
+    hasProtection: false, protectionExpiry: 0,
+  }, nowIsoStr)
+
+  // --- team chat ---------------------------------------------------------------
+  recordTeamChat(db, wipeId, [
+    { steamId: team[1], name: nameOf.get(team[1])!, message: 'heli at launch', time: Math.floor((now - 42 * 60_000) / 1000) },
+    { steamId: self, name: nameOf.get(self)!, message: 'on my way, bring ammo', time: Math.floor((now - 40 * 60_000) / 1000) },
+    { steamId: self, name: nameOf.get(self)!, message: '/nab threat', time: Math.floor((now - 12 * 60_000) / 1000) },
+  ])
 
   setServerState(db, SERVER, 'simulated', {
     seed: opts.seed ?? 7, createdAt: nowIso(), truth,

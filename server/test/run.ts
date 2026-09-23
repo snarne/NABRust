@@ -482,6 +482,9 @@ runSim(test)
 const { run: runRaid } = await import('./raid.test.ts')
 runRaid(test)
 
+const { run: runDevices } = await import('./devices.test.ts')
+runDevices(test)
+
 await Promise.all(inflight)
 console.log(`\n${passed} passed, ${failed} failed\n`)
 process.exit(failed ? 1 : 0)

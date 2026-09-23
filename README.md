@@ -9,7 +9,7 @@ Self-hosted, no dependencies on the backend, and it never touches the game.
 
 ```bash
 cp server/.env.example server/.env    # Battlemetrics token + a token of your own
-npm test                              # 158 tests, nothing to install
+npm test                              # 169 tests, nothing to install
 ./nab init --id myserver --name "MY SERVER" --battlemetrics <id>
 ./nab serve                           # collectors + API — keep it running
 npm install && npm run dev            # http://localhost:5173
@@ -45,6 +45,12 @@ are usually online.
 
 **Base Library.** Mark bases on the map, with tier, turrets and raid path.
 In-game map notes become weak sightings when Rust+ is paired.
+
+**Base devices.** Smart switches, smart alarms and storage monitors you've
+paired in game. Flip a switch from the dashboard; an alarm going off lands in
+the live-events feed and in team chat; a storage monitor on a tool cupboard
+turns upkeep into "31 h left" instead of a thing you forget until the base
+decays.
 
 **Command map.** The server's real map, rendered from its world file with
 monuments named: your team, your deaths, marked bases, live events (cargo,
@@ -83,7 +89,7 @@ src/        web app (Vite + React, no UI framework)
 server/
   collectors/ battlemetrics, steam
   parsers/    worldfile, terrain, monuments, mapRender, png, combatlog
-  rustplus/   protobuf, client, sync, events, commands, runtime
+  rustplus/   protobuf, client, sync, events, entities, items, commands, runtime
   api/        server, dataset, mapInfo, status, bases
   validation/ simulator + scoring harness
 agent/      the log tailer that runs on a gaming PC
@@ -128,6 +134,12 @@ not a veto — a blocked cell is unlikely, not impossible. Per-hit position erro
 adds in quadrature to σ. On 27 simulated deaths on a real map: median error
 21 m, true shooter inside 2σ every time.
 
+**Devices** — `server/src/rustplus/entities.ts`. An alarm reports "triggered"
+on every poll while it's on, so a raid alert fires on the transition only.
+Storage monitors report contents as numeric item ids, resolved through a
+lookup table (`items.ts`); an id that isn't in the table renders as
+`item #<id>` rather than a guess.
+
 **Raid costs** — `shared/raid.ts`. Explosives per wall and door tier from a
 current raid table (sources in the file), priced in sulfur.
 
@@ -170,6 +182,9 @@ against ground truth it never sees.
 ## Not built yet
 
 - Discord / TeamSpeak alerts
+- Native Rust+ pairing (today it borrows an FCM listener; see SETUP step 7)
+- Security camera feeds — deliberately out of scope: watching your own CCTV is
+  what the phone app is for, and it feeds no inference
 - Ore density and no-build overlays from the world file
 - Base interior prediction (needs a corpus of real layouts)
 - Names for monument prefabs not in the lookup table

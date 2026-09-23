@@ -19,7 +19,7 @@ import type { Vec2 } from '../../../shared/types.ts'
 import { displayMonument } from '../parsers/monumentNames.ts'
 import { MARKER_TYPE, type AppMarker } from './messages.ts'
 
-export type EventKind = 'cargo' | 'heli' | 'crate' | 'chinook' | 'explosion'
+export type EventKind = 'cargo' | 'heli' | 'crate' | 'chinook' | 'explosion' | 'alarm'
 
 /**
  * A hackable locked crate unlocks 15 minutes after hacking starts. The marker
@@ -95,6 +95,8 @@ function startLabel(kind: EventKind, grid: string): string {
     case 'chinook': return `Chinook inbound (${grid})`
     case 'explosion': return `Explosion at ${grid}`
     case 'crate': return `Locked crate · ${grid}`
+    // Alarms come from paired devices, not markers, and carry their own label.
+    case 'alarm': return `Alarm (${grid})`
   }
 }
 
@@ -175,4 +177,22 @@ export function trackMarkers(
 
     return out
   })
+}
+
+
+/**
+ * A device event — a smart alarm going off. Unlike marker events these have
+ * no position and no end: the alarm fires, and that is the whole story.
+ */
+export function recordDeviceEvent(
+  db: DB,
+  wipeId: number,
+  ev: { kind: EventKind; label: string; markerId?: number },
+  at = nowIso(),
+): number {
+  const r = db.prepare(
+    `INSERT INTO game_events (wipe_id, kind, observed_at, confidence, source, label, marker_id, ended_at)
+     VALUES (?, ?, ?, 1.0, 'rustplus-entity', ?, ?, ?)`,
+  ).run(wipeId, ev.kind, at, ev.label, ev.markerId ?? null, at)
+  return Number(r.lastInsertRowid)
 }

@@ -19,6 +19,7 @@ import { rebuildClans } from '../pairs.ts'
 import { serverRecords, terrainFor } from './mapInfo.ts'
 import { datasetFor } from './dataset.ts'
 import { statusFor } from './status.ts'
+import { addDevice, DeviceError, removeDevice } from '../rustplus/entities.ts'
 import { BaseInputError, createBase, deleteBase, updateBase, type BaseInput } from './bases.ts'
 
 export interface ApiOptions {
@@ -26,6 +27,12 @@ export interface ApiOptions {
   token: string
   port?: number
   teamIds?: string[]
+  /**
+   * Flip a paired smart switch. Supplied by `serve`, which owns the live Rust+
+   * connection; absent when the API runs on its own, and then the route says
+   * so instead of failing silently.
+   */
+  setSwitch?: (serverId: string, entityId: number, value: boolean) => Promise<void>
 }
 
 function json(res: ServerResponse, code: number, body: unknown): void {
@@ -202,6 +209,50 @@ export function createApi(opts: ApiOptions) {
         } catch (e) {
           if (e instanceof BaseInputError) return json(res, 400, { error: e.message })
           throw e
+        }
+      }
+
+      // --- paired Rust+ devices ---------------------------------------------
+      if (path === '/api/devices' && req.method === 'POST') {
+        const body = JSON.parse(await readBody(req, 16 * 1024)) as
+          { serverId?: string; entityId?: number; kind?: string; name?: string | null }
+        if (!body.serverId) return json(res, 400, { error: 'serverId is required' })
+        const wipe = currentWipe(db, body.serverId)
+        if (!wipe) return json(res, 404, { error: 'unknown server' })
+        try {
+          addDevice(db, body.serverId, wipe.id, {
+            entityId: Number(body.entityId), kind: String(body.kind), name: body.name ?? null,
+          })
+          return json(res, 201, { entityId: Number(body.entityId) })
+        } catch (e) {
+          if (e instanceof DeviceError) return json(res, 400, { error: e.message })
+          throw e
+        }
+      }
+
+      const devMatch = path.match(/^\/api\/devices\/(\d+)$/)
+      if (devMatch && req.method === 'DELETE') {
+        const serverId = url.searchParams.get('serverId')
+        if (!serverId) return json(res, 400, { error: 'serverId query parameter is required' })
+        const wipe = currentWipe(db, serverId)
+        if (!wipe) return json(res, 404, { error: 'unknown server' })
+        return removeDevice(db, serverId, wipe.id, Number(devMatch[1]))
+          ? json(res, 200, { removed: Number(devMatch[1]) })
+          : json(res, 404, { error: 'no such device' })
+      }
+
+      const setMatch = path.match(/^\/api\/devices\/(\d+)\/set$/)
+      if (setMatch && req.method === 'POST') {
+        const body = JSON.parse(await readBody(req, 16 * 1024)) as { serverId?: string; value?: boolean }
+        if (!body.serverId) return json(res, 400, { error: 'serverId is required' })
+        if (!opts.setSwitch) {
+          return json(res, 503, { error: 'Rust+ is not running in this process — start `nab serve`' })
+        }
+        try {
+          await opts.setSwitch(body.serverId, Number(setMatch[1]), !!body.value)
+          return json(res, 200, { entityId: Number(setMatch[1]), value: !!body.value })
+        } catch (e) {
+          return json(res, 503, { error: (e as Error).message })
         }
       }
 

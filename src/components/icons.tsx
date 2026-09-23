@@ -40,6 +40,10 @@ export const Icon = {
   ),
   moon: (p?: { size?: number }) => (<S {...p}><path d="M20 13.5A8 8 0 1 1 10.5 4a6.4 6.4 0 0 0 9.5 9.5z" /></S>),
   search: (p?: { size?: number }) => (<S {...p}><circle cx="11" cy="11" r="6.5" /><line x1="16" y1="16" x2="21" y2="21" /></S>),
+  alarm: (p?: { size?: number }) => (
+    <S {...p}><path d="M18 8a6 6 0 0 0-12 0c0 6-2 7-2 7h16s-2-1-2-7" />
+      <path d="M10.5 20a2 2 0 0 0 3 0" /></S>
+  ),
   bolt: (p?: { size?: number }) => (
     <svg viewBox="0 0 24 24" width={p?.size ?? 18} height={p?.size ?? 18} fill="currentColor" aria-hidden="true">
       <path d="M13 2L4 14h7l-1 8 9-12h-7z" />

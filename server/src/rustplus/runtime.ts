@@ -8,6 +8,7 @@
 //   getInfo      every 5m    (wipe detection, population)
 //   getMapMarkers every 15s  (cargo, heli, Chinook, locked crates, explosions)
 //   getMap       once per wipe (expensive — carries the full JPEG)
+//   entities     subscribed (pushed), with a 5m poll as a safety net
 // ---------------------------------------------------------------------------
 
 import type { DB } from '../db/index.ts'
@@ -15,10 +16,11 @@ import { nowIso, setServerState } from '../db/index.ts'
 import { currentWipe } from '../retention.ts'
 import { RustPlusClient, connectWithRetry } from './client.ts'
 import {
-  recordTeammateDeath, syncMap, syncServerInfo, syncTeam,
+  recordTeamChat, recordTeammateDeath, syncMap, syncServerInfo, syncTeam,
 } from './sync.ts'
 import { handleCommand, isCommand } from './commands.ts'
-import { trackMarkers } from './events.ts'
+import { trackMarkers, recordDeviceEvent } from './events.ts'
+import { deviceLabel, listDevices, recordDeviceState } from './entities.ts'
 import { isNight, minutesUntil, type AppTime, type AppTeamInfo } from './messages.ts'
 import { rustPlusToNorm } from '../../../shared/world.ts'
 
@@ -32,7 +34,7 @@ export interface RuntimeOptions {
   dataDir: string
   dashboardUrl?: string
   webSocketImpl?: typeof WebSocket
-  intervals?: { time?: number; team?: number; info?: number; markers?: number }
+  intervals?: { time?: number; team?: number; info?: number; markers?: number; devices?: number }
   /** Post crate / heli-down / cargo events to team chat. Default on. */
   announceEvents?: boolean
   log?: (msg: string) => void
@@ -44,6 +46,13 @@ export interface RuntimeHandle {
   stop: () => void
   /** Latest in-game time, for the command handler and night warnings. */
   time: () => AppTime | undefined
+  /**
+   * Flip a paired smart switch and read back what it reports. Rejects when
+   * Rust+ isn't connected, rather than pretending the switch moved.
+   */
+  setSwitch: (entityId: number, value: boolean) => Promise<void>
+  /** Read one device now, whatever its kind. */
+  readDevice: (entityId: number) => Promise<void>
 }
 
 export function startRustPlus(opts: RuntimeOptions): RuntimeHandle {
@@ -96,6 +105,8 @@ export function startRustPlus(opts: RuntimeOptions): RuntimeHandle {
 
     // 3. Team chat is the command surface.
     client.on('teamMessage', (msg) => {
+      const wid = wipeId()
+      if (wid !== null) recordTeamChat(opts.db, wid, [msg])
       if (!isCommand(msg.message)) return
       const reply = handleCommand({
         db: opts.db,
@@ -110,6 +121,24 @@ export function startRustPlus(opts: RuntimeOptions): RuntimeHandle {
     })
 
     client.on('teamChanged', (team) => { applyTeam(team) })
+
+    // 3a. Backfill the chat we missed while disconnected.
+    try {
+      const wid = wipeId()
+      const history = await client.getTeamChat()
+      if (wid !== null && history.length) recordTeamChat(opts.db, wid, history)
+    } catch (e) { log(`getTeamChat: ${(e as Error).message}`) }
+
+    // 3b. Paired devices: subscribe so the server pushes changes, and keep a
+    // slow poll as a safety net for pushes that never arrive.
+    client.on('entityChanged', (ev) => {
+      const wid = wipeId()
+      if (wid === null) return
+      const r = recordDeviceState(opts.db, opts.serverId, wid, ev.entityId, ev.payload)
+      if (!r.row) return
+      if (r.alarmTriggered) announceAlarm(client, wid, r.row)
+    })
+    await subscribeDevices(client)
 
     // 4. Polls.
     const pollTeam = async () => {
@@ -145,6 +174,21 @@ export function startRustPlus(opts: RuntimeOptions): RuntimeHandle {
         }
       } catch (e) { log(`getMapMarkers: ${(e as Error).message}`) }
     }
+    const pollDevices = async () => {
+      const wid = wipeId()
+      if (wid === null) return
+      for (const d of listDevices(opts.db, opts.serverId, wid)) {
+        try {
+          const info = await client.getEntityInfo(d.entityId)
+          const r = recordDeviceState(opts.db, opts.serverId, wid, d.entityId, info)
+          if (r.row && r.alarmTriggered) announceAlarm(client, wid, r.row)
+        } catch (e) {
+          // A device that was destroyed or unpaired answers with an error;
+          // that is information, not a failure, so it is logged and skipped.
+          log(`entity ${d.entityId}: ${(e as Error).message}`)
+        }
+      }
+    }
     const pollInfo = async () => {
       try {
         const i = await client.getInfo()
@@ -160,11 +204,60 @@ export function startRustPlus(opts: RuntimeOptions): RuntimeHandle {
     await pollTeam()
     await pollTime()
     await pollMarkers()
+    await pollDevices()
 
     timers.push(setInterval(() => void pollTeam(), opts.intervals?.team ?? 15_000))
     timers.push(setInterval(() => void pollTime(), opts.intervals?.time ?? 60_000))
     timers.push(setInterval(() => void pollInfo(), opts.intervals?.info ?? 300_000))
     timers.push(setInterval(() => void pollMarkers(), opts.intervals?.markers ?? 15_000))
+    timers.push(setInterval(() => void pollDevices(), opts.intervals?.devices ?? 300_000))
+  }
+
+  /** Ask the server to push changes for every device we know about. */
+  const subscribeDevices = async (client: RustPlusClient) => {
+    const wid = wipeId()
+    if (wid === null) return
+    for (const d of listDevices(opts.db, opts.serverId, wid)) {
+      try { await client.setSubscription(d.entityId, true) } catch { /* poll covers it */ }
+    }
+  }
+
+  /**
+   * An alarm going off on your own base is the one device event that can't
+   * wait for someone to look at a dashboard: it goes to the event feed, to
+   * team chat, and to any alert sink.
+   */
+  const announceAlarm = (
+    client: RustPlusClient,
+    wid: number,
+    row: { entityId: number; kind: 'switch' | 'alarm' | 'storage'; name: string | null },
+  ) => {
+    const label = `ALARM · ${deviceLabel(row)}`
+    recordDeviceEvent(opts.db, wid, { kind: 'alarm', label, markerId: row.entityId })
+    log(label)
+    opts.onAlert?.({ kind: 'alarm', text: label })
+    if (opts.announceEvents !== false) {
+      void client.sendTeamMessage(`NAB: ${label}`).catch(() => {})
+    }
+  }
+
+  /** Read a device and store what it says. Shared by the API and the poll. */
+  const readDevice = async (entityId: number) => {
+    const client = active
+    const wid = wipeId()
+    if (!client) throw new Error('rust+ is not connected')
+    if (wid === null) throw new Error('no current wipe')
+    const info = await client.getEntityInfo(entityId)
+    const r = recordDeviceState(opts.db, opts.serverId, wid, entityId, info)
+    if (r.row && r.alarmTriggered) announceAlarm(client, wid, r.row)
+  }
+
+  const setSwitch = async (entityId: number, value: boolean) => {
+    const client = active
+    if (!client) throw new Error('rust+ is not connected')
+    await client.setEntityValue(entityId, value)
+    // Read back rather than assuming: the switch may be unpowered.
+    await readDevice(entityId)
   }
 
   const applyTeam = (team: AppTeamInfo) => {
@@ -213,5 +306,7 @@ export function startRustPlus(opts: RuntimeOptions): RuntimeHandle {
       void retry.then((h) => h.stop())
     },
     time: () => lastTime,
+    setSwitch,
+    readDevice,
   }
 }

@@ -38,7 +38,7 @@ Fill in at least:
 npm test
 ```
 
-Expect `158 passed, 0 failed`, in a few seconds, with nothing installed.
+Expect `169 passed, 0 failed`, in a few seconds, with nothing installed.
 
 If you have a Rust world file handy, point the parser tests at it for six more
 checks against real data:
@@ -145,6 +145,24 @@ port, your playerId and a playerToken. Then:
 
 The token is an int32 and is often negative, so pass it after a bare `--`.
 Pairing here doesn't break the Rust+ phone app; both can be paired.
+
+## 7b. Paired devices (optional)
+
+Smart switches, smart alarms and storage monitors you build and pair in game.
+Pairing one sends a push notification carrying its entity id — the same
+listener as step 7 prints it. Then:
+
+```bash
+./nab device --id myserver --add 1234567 --kind alarm --name "front door"
+./nab device --id myserver --add 7654321 --kind storage --name "tool cupboard"
+./nab device --id myserver            # list them and their last known state
+```
+
+Kinds are `switch`, `alarm` and `storage`. A switch can be flipped from the
+Command page; an alarm going off becomes a live event and a team-chat message;
+a storage monitor on a tool cupboard shows remaining upkeep.
+
+Devices are scoped to the wipe, since entity ids die with the base they're in.
 
 ## 8. The log agent — combat logs
 

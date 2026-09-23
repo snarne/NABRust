@@ -417,6 +417,38 @@ CREATE TABLE IF NOT EXISTS clan_memory (
 -- ---------------------------------------------------------------------------
 
 -- Small key/value for per-server live values: in-game time, population.
+-- Paired Rust+ devices: smart switches, smart alarms, storage monitors.
+-- Scoped to the wipe, because entity ids die with the base they're built in.
+-- Team chat, as seen by Rust+. Useful after the fact: what was called out,
+-- and what NABRust answered. Scoped to the wipe like the rest of hot data.
+CREATE TABLE IF NOT EXISTS team_chat (
+  wipe_id   INTEGER NOT NULL REFERENCES wipes(id) ON DELETE CASCADE,
+  steam_id  TEXT NOT NULL,
+  name      TEXT NOT NULL,
+  message   TEXT NOT NULL,
+  colour    TEXT,
+  at        TEXT NOT NULL,
+  PRIMARY KEY (wipe_id, steam_id, at, message)
+);
+CREATE INDEX IF NOT EXISTS idx_team_chat_at ON team_chat(wipe_id, at DESC);
+
+CREATE TABLE IF NOT EXISTS entities (
+  server_id   TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
+  wipe_id     INTEGER NOT NULL REFERENCES wipes(id) ON DELETE CASCADE,
+  entity_id   INTEGER NOT NULL,
+  kind        TEXT NOT NULL,          -- switch | alarm | storage
+  name        TEXT,
+  -- Last known state. value is the switch/alarm boolean; storage monitors
+  -- report contents and, on a tool cupboard, an upkeep window.
+  value       INTEGER,
+  items       TEXT,                   -- JSON [{itemId, quantity, isBlueprint}]
+  capacity    INTEGER,
+  protection_expiry TEXT,
+  last_seen   TEXT,
+  paired_at   TEXT NOT NULL,
+  PRIMARY KEY (server_id, wipe_id, entity_id)
+);
+
 CREATE TABLE IF NOT EXISTS server_state (
   server_id  TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
   key        TEXT NOT NULL,

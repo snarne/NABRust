@@ -17,6 +17,9 @@ import { lastPoll, POLL_GAP_MS } from '../collectors/battlemetrics.ts'
 import { loadLinks } from '../pairs.ts'
 import { scoreThreats, serverHeat, type ThreatInput } from '../threat.ts'
 import { serverRecord } from './mapInfo.ts'
+import { listDevices, upkeepSummary } from '../rustplus/entities.ts'
+import { recentTeamChat } from '../rustplus/sync.ts'
+import { itemName } from '../rustplus/items.ts'
 import { normToGrid } from '../../../shared/world.ts'
 import { calibrate, pairConfidence } from '../../../shared/inference/clanEvidence.ts'
 import type {
@@ -626,5 +629,20 @@ export function datasetFor(db: DB, serverId: string, opts: DatasetOptions = {}):
     teamIds,
     deaths,
     gameTime,
+    teamChat: recentTeamChat(db, wipe?.id ?? null, 40),
+    devices: listDevices(db, serverId, wipe?.id ?? null).map((d) => ({
+      entityId: d.entityId,
+      kind: d.kind,
+      name: d.name,
+      value: d.value,
+      contents: d.items
+        .slice()
+        .sort((a, b) => b.quantity - a.quantity)
+        .map((i) => ({ name: itemName(i.itemId), quantity: i.quantity })),
+      capacity: d.capacity,
+      upkeep: upkeepSummary(d),
+      protectionExpiry: d.protectionExpiry,
+      lastSeen: d.lastSeen,
+    })),
   }
 }

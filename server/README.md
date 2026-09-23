@@ -6,7 +6,7 @@ built-in `node:sqlite` and `node:http`, and TypeScript run directly via
 
 ```bash
 cd server
-npm test                                   # 158 tests, no framework
+npm test                                   # 169 tests, no framework
 
 export NABRUST_DB=./nabrust.db
 export NABRUST_TOKEN=pick-something
